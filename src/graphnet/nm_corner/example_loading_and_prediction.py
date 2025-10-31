@@ -167,5 +167,5 @@ def pred_main(param_path, data_path=None, gpus=None
     print(df.head(5))
 
 if __name__ == "__main__":
-    p_path = '/ptmp/mpp/nikme/graphnet/src/graphnet/nm_corner/best_w_snows_pretrain_plus_8p5mil_nt.pth'
+    p_path = '/ptmp/mpp/nikme/best_w_snows_pretrain_plus_8p5mil_nt.pth'
     pred_main(param_path=p_path, data_path=None, gpus=[0])
