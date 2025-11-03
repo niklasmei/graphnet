@@ -15,9 +15,7 @@ from graphnet.data import GraphNeTDataModule
 
 from graphnet.data.utilities.sqlite_utilities import query_database
 
-
 from graphnet.models.data_representation.graphs import KNNGraph
-
 from graphnet.models.detector import IceCube86
 
 from typing import Set, Union, List, Type, Optional, Dict, Any
@@ -58,25 +56,12 @@ from graphnet.models.data_representation.graphs.edges import KNNEdges
 
 
 from graphnet.models.task import StandardLearnedTask
-from graphnet.utilities.maths import eps_like
 
 from torch.optim import RAdam
 
 
 from graphnet.training.loss_functions import LossFunction
 
-class custom_EnergyReconstruction(StandardLearnedTask):
-    """Reconstructs energy using stable method."""
-
-    # Requires one feature: untransformed energy
-    default_target_labels = ["energy"]
-    default_prediction_labels = ["energy_pred"]
-    nb_inputs = 1
-
-    def _forward(self, x: Tensor) -> Tensor:
-        # Transform to positive energy domain avoiding `-inf` in `log10`
-        # Transform, thereby preventing overflow and underflow error.
-        return x + eps_like(x)
 
 class DirectionRecoNM(StandardLearnedTask):
     """Reconstructs direction."""
@@ -124,71 +109,8 @@ class OpeningAngleLoss(LossFunction):
 
         return elements
 
-class RMSNorm(torch.nn.Module):
-    def __init__(
-        self,
-        dim,
-        unit_offset = False
-    ):
-        super().__init__()
-        self.unit_offset = unit_offset
-        self.scale = dim ** 0.5
-
-        self.g = torch.nn.Parameter(torch.zeros(dim))
-        torch.nn.init.constant_(self.g, 1. - float(unit_offset))
-
-    def forward(self, x):
-        gamma = self.g + float(self.unit_offset)
-        return torch.nn.functional.normalize(x, dim = -1) * self.scale * gamma
-
-
-#region ### Block for sub_sample functions ###
-def hlc_sub_sample(data, max_length, columns = [0, 1, 2], nb_nearest=8, hlc_pos=6):
-    x = data.x
-    btch = data.batch
-    x = x.view(-1, 1) if x.dim() == 1 else x
-    score = x[:,hlc_pos-1]
-
-    node_index = topk(score, max_length, btch)
-    edge_ind = knn_graph(x=x[:, columns][node_index], k=nb_nearest, batch=btch[node_index])
-    return node_index , edge_ind
-
-def custom_sub_sample(data, max_length, score, pos, nb_nearest=8):
-    #x = data.x
-    btch = data.batch
-    #x = x.view(-1, 1) if x.dim() == 1 else x
-
-    node_index = topk(score, max_length, btch)
-    edge_ind = knn_graph(x=pos[node_index], k=nb_nearest, batch=btch[node_index])
-    return node_index , edge_ind
-
-def simple_sub_sample(batchv, max_length, score, pos, nb_nearest=8):
-    node_index = topk(score, max_length, batchv)
-    edge_ind = knn_graph(x=pos[node_index], k=nb_nearest, batch=batchv[node_index])
-    return node_index , edge_ind
-
-#endregion
 
 #region ### Block for contrastive pretraining
-def generate_representation_simple(x: torch.Tensor,
-                                   bv: torch.Tensor):
-    
-    maximize = scatter(src=x, index=bv, dim = 0, reduce='max')
-    minimize = scatter(src=x, index=bv, dim = 0, reduce='min')
-    summation = scatter(src=x, index=bv, dim = 0, reduce='sum')
-    averaging = scatter(src=x, index=bv, dim = 0, reduce='mean')
-
-    #rep = torch.cat((maximize,minimize,summation,averaging), dim=1)
-    rep = maximize + minimize + summation + averaging
-
-    return rep
-
-def batched_mse_loss(reco, orig, bv):
-    reco = to_dense_batch(reco, bv)[0]
-    orig = to_dense_batch(orig, bv)[0]
-
-    loss = torch.mean((reco - orig) ** 2, dim=[1,2]).view(-1,1)
-    return loss
 
 class Projector(Model):
     """ Projection Head for SimSiam """
@@ -349,8 +271,6 @@ class cont_frame(EasySyntax):
         p1, p2 = self.predictor(z1), self.predictor(z2)
         loss = negative_cosine_similarity(p1, z2) / 2 + negative_cosine_similarity(p2, z1) / 2
 
-        #loss = self.id_task(loss)
-
         if torch.any(p1.isnan()) or torch.any(p2.isnan()):
             print('nan in predictor/projector')
 
@@ -481,9 +401,6 @@ class mask_pred_augment(Model):
             auged.x[:,self.masked_feat] = auged.x[:,self.masked_feat]*mask.view(-1,1)
         else:
             auged.x[ind,self.masked_feat[0]:self.masked_feat[-1]+1] = self.values
-        # print('orig', data.x[0:5])
-        # print('auged', auged.x[0:5])
-        # print('target', target[0:5])
 
         #returned mask is zero at the target position and 1 else
         return auged, target, mask
@@ -544,10 +461,6 @@ class mask_pred_frame(EasySyntax):
             assert mask_pred_net.nb_outputs == len(masked_feat), f'make sure that your \"mask_pred_net\" has number of output feats equal to nb of masked feats ({len(masked_feat)})'
             self.rep = mask_pred_net
 
-        # self.scorer = standard_maskpred_net(in_dim=len(masked_feat),
-        #                                     hidden_dim=default_hidden_dim,
-        #                                     out_dim=1,
-        #                                     nb_linear=default_nb_linear)
         
         self.custom_loss = True
         assert final_loss in ['cosine', 'mse'], f'can only choose from {['cosine', 'mse']} for loss function'
@@ -1145,7 +1058,6 @@ class Theseus_DeepIce(GNN):
 
         self.embedding = rope_embedder(token_dim=hidden_dim, max_seqlen=max_length)
         
-        #first attention block, first layer has seperately roped q and k if rope_qk_sep==True
         self.sandwich = torch.nn.ModuleList(
             [flashMHA_block(
                     input_dim=hidden_dim,
@@ -1225,9 +1137,7 @@ class Theseus_DeepIce(GNN):
         if self.exit_early:
             keep_index = torch.ones(x.shape[0], dtype=bool)
             keep_index[cls_ind[:-1]] = False
-            #cls_collection = x[cls_ind[:-1], :]
-            #cls_collection = cls_collection.repeat_interleave(seq_lengths, dim=0)
-            return x[keep_index].to(dtype=torch.float32) , x[cls_ind[:-1], :].to(dtype=torch.float32)# + cls_collection
+            return x[keep_index].to(dtype=torch.float32) , x[cls_ind[:-1], :].to(dtype=torch.float32)
         else:
             return x[cls_ind[:-1], :].to(dtype=torch.float32) #cu_seqs-1
 
@@ -1265,40 +1175,6 @@ def main(param_path, save_path, gpus=None
         query = "select event_no from truth limit 1000000"
         out = query_database(database=db_paths[i], query=query)
         sels.append(out['event_no'].tolist())
-    
-    # target_nb_events = 1000000 #meaning 10 sets
-    # starting_set = [22010, 6]
-    # db_paths = []
-    # sels = []
-    # count = 0
-
-    # len_directory = '/ptmp/mpp/nikme/python_files/snowstorm_seqlen_parquets'
-    # l = sorted(os.listdir(len_directory), key=lambda x:(int(re.search(r'runid\d+',x).group().replace('runid', '')),int(re.search(r'part_\d+',x).group().replace('part_', ''))))
-    # #print(len(l))
-    # for i in range(len(l)):
-    #     current_set = [int(re.search(r'runid\d+',l[i]).group().replace('runid', '')),int(re.search(r'part_\d+',l[i]).group().replace('part_', ''))]
-    #     print(current_set)
-    #     if (current_set[0]<starting_set[0] or current_set[1]<starting_set[1]):
-    #         print('skipped')
-    #         pass
-    #     else:
-    #         if current_set[0]<22042:
-    #             correct_dir = '/scratch/users/smagel/data/SnowStormDataset/sqlite/'
-    #         else:
-    #             print('failure imminent')
-    #             correct_dir = '/ptmp/nikme/data_files/SnowStormData/sqlite/'
-    #         db_paths.append(correct_dir+f'{current_set[0]}'+f'/merged_part_{current_set[1]}.db')
-    #         #print(db_paths)
-    #         valid_nbs = pd.read_parquet(path=len_directory+'/'+l[i], columns=['event_no']).head(1000000)
-    #         sels.append(valid_nbs['event_no'].tolist())
-    #         current_nb = min(int(re.search(r'nbevents\d+',l[i]).group().replace('nbevents', '')), len(sels[-1]))
-    #         target_nb_events = target_nb_events - min(2000000, current_nb)
-    #         count += min(2000000, current_nb)
-    #         print(current_nb, target_nb_events)
-    #         if target_nb_events <= 0:
-    #             break
-
-    # print('nb of selected events', count)
     
     #defining the data
     dm = GraphNeTDataModule(
@@ -1398,30 +1274,8 @@ def main(param_path, save_path, gpus=None
         hidden_dim=lat_dim,
         exit_early=False) 
     latent_dim = backbone.nb_outputs
-    #backbone.load_state_dict("/ptmp/nikme/training_files/models/modelv1_retry_cont_pretraining/modelv1_just_wiggle/pretrained_model/state_dict.pth")
-
-    # model = cont_frame(
-    #     enc_net=backbone,
-    #     lat_feat=lat_dim,
-    #     optimizer_class = RAdam,
-    #     optimizer_kwargs = {'eps': 1e-05, 'lr': 2e-04},)
     
-    
-    # #define task; choose appropriate
-    # task = EnergyReconstruction(
-    #     target_labels=['energy'],
-    #     hidden_size=latent_dim,
-    #     transform_prediction_and_target = lambda x: torch.log10(x),
-    #     loss_function=LogCoshLoss()
-    # )
 
-    # task = custom_EnergyReconstruction(
-    #     target_labels=['energy'],
-    #     hidden_size=latent_dim,
-    #     transform_target = lambda x: torch.log10(x),
-    #     transform_inference = lambda x: torch.pow(10, x),
-    #     loss_function=LogCoshLoss()
-    # )
 
     # task = DirectionReconstructionWithKappa(
     #     hidden_size=latent_dim,
@@ -1448,11 +1302,7 @@ def main(param_path, save_path, gpus=None
 
     os.makedirs(save_path, exist_ok=True)
 
-    # #switch to appropriate name and cols
-    # name = 'energy_pred'
-    # cols = ['energy_pred']
     name = 'direction_prediction'
-    #xyz = ['x','y','z','kappa']
     xyz = ['x','y','z']
     cols = [f'direction_pred_{xyz[i]}' for i in range(len(xyz))]
 
@@ -1462,18 +1312,8 @@ def main(param_path, save_path, gpus=None
                                     gpus = gpus)
     
     df.to_parquet(f'{os.path.join(save_path, name)}.parquet')
-    
-    #print(df.head())
 
 if __name__ == "__main__":
-    #some_list = [200]
-    #some_list = [i for i in range(47,51)]
-    #some_list = ['pre', 'scratch']
-    some_list = ['combo6040'] #1mil=1mil, 1milmore=2mil, 1milmoreagain=3mil, 1milmoryetagain=4mil, 1milmorelast=5mil
-
-    #nohup python /ptmp/mpp/nikme/python_files/from_raven/py_scripts/raven_Theseus_pretrained_modelv3_script.py > /ptmp/mpp/nikme/my_logs/pred_log1.out & 
-    for i in range(len(some_list)):
-        print('predicting', some_list[i])
-        s_path = f'/ptmp/mpp/nikme/predictions_parquet/modelv3_vMF_plus_opening_angle/opening_angle_{some_list[i]}'
-        p_path = f'/ptmp/mpp/nikme/python_files/from_raven/model_pths/modelv3_vMF_openingangle/opening_angle_10mil_snows_pretrained_{some_list[i]}/state_dict.pth'
-        main(param_path=p_path, save_path=s_path, gpus=[1])
+    s_path = 'some/path'
+    p_path = 'some/path'
+    main(param_path=p_path, save_path=s_path, gpus=[0])

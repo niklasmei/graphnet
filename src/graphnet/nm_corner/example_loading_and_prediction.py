@@ -1,3 +1,4 @@
+#below also possible from graphnet.nm_corner.nm_collect_reduced
 from graphnet.nm_corner.nm_collect_all import simple_gnn_encoder
 from graphnet.nm_corner.nm_collect_all import general_compression_module
 from graphnet.nm_corner.nm_collect_all import Theseus_DeepIce
@@ -167,5 +168,5 @@ def pred_main(param_path, data_path=None, gpus=None
     print(df.head(5))
 
 if __name__ == "__main__":
-    p_path = '/ptmp/mpp/nikme/best_w_snows_pretrain_plus_8p5mil_nt.pth'
+    p_path = '/ptmp/mpp/nikme/nm_essentials/best_w_snows_pretrain_plus_8p5mil_nt.pth'
     pred_main(param_path=p_path, data_path=None, gpus=[0])
